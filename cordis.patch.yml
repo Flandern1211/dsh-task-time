@@ -1,0 +1,4 @@
+# dsh-task-time bundle patch: insert the plugin row into the host composition.
+- insert:
+    - id: dsh-task-time
+      name: 'dsh-task-time'
