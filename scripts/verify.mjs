@@ -42,9 +42,20 @@ const handlers = {} // RPC handlers
 const eventHandlers = {} // ctx.on
 const registeredRoutes = []
 
+// userQuestions 服务 mock（可被插件 hook 包装 ask）
+let userQuestionsSvc = null
+function makeUserQuestions() {
+  const svc = {
+    ask: async (request) => ({ answers: [] }),
+  }
+  userQuestionsSvc = svc
+  return svc
+}
+
 function makeCtx() {
+  const svc = makeUserQuestions()
   return {
-    get: () => undefined,
+    get: (name, optional) => (name === 'userQuestions' ? svc : undefined),
     on: (name, fn) => {
       eventHandlers[name] = fn
       const off = () => { delete eventHandlers[name] }
@@ -167,15 +178,21 @@ check('新会话仍弹窗', pendNew.pending === true, pendNew)
 for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
 for (const off of registeredRoutes.splice(0)) {}
 
-// ---------- 场景 3：决策提醒（任务未运行也应提醒） ----------
+// ---------- 场景 3：决策提醒（任务未运行也应提醒，三通道） ----------
 const copyFile3 = join(work, 'index3.mjs')
 writeFileSync(copyFile3, mod, 'utf8')
 writeFileSync(STATE, JSON.stringify({
   records: [],
   defaults: { reminderIntervalMinutes: 10, externalAlert: true },
-  configs: { 'dec-s1': { taskName: '决策测试', plannedMinutes: 60, externalAlert: false, configured: true } },
+  configs: {
+    'dec-s1': { taskName: '决策测试', plannedMinutes: 60, externalAlert: false, configured: true },
+    'dec-s2': { taskName: '提问测试', plannedMinutes: 60, externalAlert: false, configured: true },
+  },
   dismissed: [],
-  tasks: { 'dec-s1': { sessionId: 'dec-s1', startedAt: Date.now(), accumulatedMs: 0, running: false, waitingDecision: false, lastResumeAt: null, lastPauseAt: null, plannedMs: 3600000, taskName: '决策测试', remindersFired: 0, overdueFired: false, lastSummary: null } },
+  tasks: {
+    'dec-s1': { sessionId: 'dec-s1', startedAt: Date.now(), accumulatedMs: 0, running: false, waitingDecision: false, lastResumeAt: null, lastPauseAt: null, plannedMs: 3600000, taskName: '决策测试', remindersFired: 0, overdueFired: false, lastSummary: null },
+    'dec-s2': { sessionId: 'dec-s2', startedAt: Date.now(), accumulatedMs: 0, running: false, waitingDecision: false, lastResumeAt: null, lastPauseAt: null, plannedMs: 3600000, taskName: '提问测试', remindersFired: 0, overdueFired: false, lastSummary: null },
+  },
   history: {},
 }, null, 2))
 
@@ -184,30 +201,34 @@ const ctx3 = makeCtx()
 mod3.apply(ctx3)
 await new Promise((r) => setTimeout(r, 300))
 
-// 模拟 ask_user_question（任务 running=false）
-const preExec = eventHandlers['tools/pre-execute']
-if (preExec) {
+// 通道 1：approval/request（任务 running=false 也应提醒）
+const approvalHandler = eventHandlers['approval/request']
+if (approvalHandler) {
   let nextCalled = false
-  const agent = { id: 'dec-s1' }
-  await preExec({ agent, name: 'ask_user_question' }, async () => { nextCalled = true })
-  check('决策提醒：next 被调用（不阻断工具）', nextCalled === true, 'next not called')
+  await approvalHandler({ agent: { id: 'dec-s1' }, toolName: 'pwsh', reason: '需要更高权限' }, async () => { nextCalled = true })
+  check('通道1 approval：next 被调用（不阻断审批）', nextCalled === true, 'next not called')
 }
 
-const rems = await callRpc('get-reminders', { since: 0 })
-const decision = (rems.reminders || []).find((r) => r.needDecision)
-check('决策提醒：产生 needDecision 提醒卡', !!decision, rems)
-check('决策提醒：文本包含决策提示', decision && /需要你确定/.test(decision.text), decision)
+const rems1 = await callRpc('get-reminders', { since: 0 })
+const decision1 = (rems1.reminders || []).find((r) => r.needDecision)
+check('通道1 approval：产生 needDecision 提醒卡', !!decision1, rems1)
+check('通道1 approval：文本含工具名', decision1 && /批准/.test(decision1.text), decision1)
+
+// 通道 2：userQuestions.ask hook（ask_user_question 提问，用 dec-s2 避开 approval 节流）
+const uqSvc = userQuestionsSvc
+if (uqSvc && typeof uqSvc.ask === 'function') {
+  await uqSvc.ask({ questions: [{ id: 'q1', question: '请选择方案 A 还是 B？' }], agent: { id: 'dec-s2' } })
+}
+const rems2 = await callRpc('get-reminders', { since: 0 })
+const decision2 = (rems2.reminders || []).find((r) => r.needDecision && /请选择方案/.test(r.text))
+check('通道2 userQuestions：提问产生提醒卡', !!decision2, rems2)
+check('通道2 userQuestions：文本含提问内容', decision2 && /请选择方案 A 还是 B/.test(decision2.text), decision2)
 
 // 重复触发（20s 节流内）不应重复
 const before = (await callRpc('get-reminders', { since: 0 })).reminders.length
-await preExec({ agent: { id: 'dec-s1' }, name: 'ask_user_question' }, async () => {})
+await uqSvc.ask({ questions: [{ id: 'q2', question: '重复提问' }], agent: { id: 'dec-s2' } })
 const after = (await callRpc('get-reminders', { since: 0 })).reminders.length
 check('决策提醒：20s 节流内不重复', after === before, `before=${before} after=${after}`)
-
-// 非决策工具不应提醒
-await preExec({ agent: { id: 'dec-s1' }, name: 'some_other_tool' }, async () => {})
-const after2 = (await callRpc('get-reminders', { since: 0 })).reminders.length
-check('决策提醒：普通工具不触发', after2 === after, `after=${after} after2=${after2}`)
 
 for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
 
