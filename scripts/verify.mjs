@@ -52,10 +52,22 @@ function makeUserQuestions() {
   return svc
 }
 
+// agents 服务 mock（可配置 roots；默认空 —— 让 isRoot 走 agentsSvc 路径）
+let agentRoots = []
+function makeAgents() {
+  return {
+    roots: () => agentRoots,
+  }
+}
+
 function makeCtx() {
   const svc = makeUserQuestions()
   return {
-    get: (name, optional) => (name === 'userQuestions' ? svc : undefined),
+    get: (name, optional) => {
+      if (name === 'userQuestions') return svc
+      if (name === 'agents') return makeAgents()
+      return undefined
+    },
     on: (name, fn) => {
       eventHandlers[name] = fn
       const off = () => { delete eventHandlers[name] }
@@ -84,7 +96,7 @@ function makeCtx() {
 
 function callRpc(method, args) {
   return new Promise((resolve, reject) => {
-    const route = registeredRoutes[0]
+    const route = registeredRoutes[registeredRoutes.length - 1]
     const body = Buffer.from(JSON.stringify({ method, args: args || {} }))
     const req = {
       on: (evt, cb) => {
@@ -159,6 +171,7 @@ writeFileSync(STATE, JSON.stringify({
 
 const mod2 = await import(pathToFileURL(copyFile2).href)
 const ctx2 = makeCtx()
+agentRoots = [{ id: 'cfg-s1' }]
 mod2.apply(ctx2)
 await new Promise((r) => setTimeout(r, 300))
 
@@ -198,6 +211,7 @@ writeFileSync(STATE, JSON.stringify({
 
 const mod3 = await import(pathToFileURL(copyFile3).href)
 const ctx3 = makeCtx()
+agentRoots = [{ id: 'dec-s1' }, { id: 'dec-s2' }]
 mod3.apply(ctx3)
 await new Promise((r) => setTimeout(r, 300))
 
@@ -239,6 +253,7 @@ writeFileSync(STATE, JSON.stringify({ records: [], configs: {}, dismissed: [], t
 
 const mod4 = await import(pathToFileURL(copyFile4).href)
 const ctx4 = makeCtx()
+agentRoots = [{ id: 'write-s1' }, { id: 'write-s2' }]
 mod4.apply(ctx4)
 await new Promise((r) => setTimeout(r, 300))
 
@@ -264,6 +279,61 @@ check('重载：已配置会话不弹窗', pendWrite1.pending === false, pendWri
 check('重载：已跳过会话不弹窗', pendWrite2.pending === false, pendWrite2)
 const cfgReload = await callRpc('get-session-config', { sessionId: 'write-s1' })
 check('重载：配置值恢复（15 分钟 / 8 分钟）', cfgReload.plannedMinutes === 15 && cfgReload.reminderIntervalMinutes === 8, cfgReload)
+
+for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
+
+// ---------- 场景 5：孤儿任务清理（已删除会话不再显示"进行中"） ----------
+const copyFile6 = join(work, 'index6.mjs')
+writeFileSync(copyFile6, mod, 'utf8')
+writeFileSync(STATE, JSON.stringify({
+  records: [],
+  defaults: { reminderIntervalMinutes: 10, externalAlert: false },
+  configs: {
+    'orphan-s1': { taskName: '孤儿运行中', plannedMinutes: 60, externalAlert: false, configured: true },
+    'orphan-s2': { taskName: '孤儿空任务', plannedMinutes: null, externalAlert: false, configured: false },
+  },
+  dismissed: [],
+  tasks: {
+    // 会话已删除但任务还在 running（agent/disposed 没触发）→ tick 应静默收尾
+    'orphan-s1': { sessionId: 'orphan-s1', startedAt: Date.now() - 120000, accumulatedMs: 60000, running: true, waitingDecision: false, lastResumeAt: Date.now() - 30000, lastPauseAt: null, plannedMs: 3600000, taskName: '孤儿运行中', remindersFired: 0, overdueFired: false, lastSummary: null },
+    // 会话已删除、任务从未启动 → tick 应清除残留条目
+    'orphan-s2': { sessionId: 'orphan-s2', startedAt: null, accumulatedMs: 0, running: false, waitingDecision: false, lastResumeAt: null, lastPauseAt: null, plannedMs: null, taskName: null, remindersFired: 0, overdueFired: false, lastSummary: null },
+    // 仍在线的会话 → 不应被清理
+    'live-s1': { sessionId: 'live-s1', startedAt: Date.now() - 5000, accumulatedMs: 1000, running: true, waitingDecision: false, lastResumeAt: Date.now() - 1000, lastPauseAt: null, plannedMs: 3600000, taskName: '在线任务', remindersFired: 0, overdueFired: false, lastSummary: null },
+  },
+  history: {},
+}, null, 2))
+
+const mod6 = await import(pathToFileURL(copyFile6).href)
+const ctx6 = makeCtx()
+// 只有 live-s1 还在线
+agentRoots = [{ id: 'live-s1' }]
+mod6.apply(ctx6)
+await new Promise((r) => setTimeout(r, 300))
+
+// 等 tick 清理执行（3s tick）
+await new Promise((r) => setTimeout(r, 3500))
+
+const board6 = await callRpc('get-task-board', {})
+const active6 = board6.active || []
+check('孤儿清理：已删除 running 任务不再显示 active', !active6.some((a) => a.sessionId === 'orphan-s1'), active6)
+check('孤儿清理：已删除空任务不再显示 active', !active6.some((a) => a.sessionId === 'orphan-s2'), active6)
+check('孤儿清理：在线会话任务保留', active6.some((a) => a.sessionId === 'live-s1' && a.running === true), active6)
+check('孤儿清理：收尾计入 finished 记录', (board6.finished || []).some((r) => r.sessionId === 'orphan-s1'), board6.finished)
+check('孤儿清理：收尾用时正确（已累计 60s，停机不计时）', (board6.finished || []).some((r) => r.sessionId === 'orphan-s1' && r.actualMs >= 60000 && r.actualMs < 90000), board6.finished)
+
+// 再次重启模拟：孤儿已收尾且持久化，不再恢复
+for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
+const copyFile7 = join(work, 'index7.mjs')
+writeFileSync(copyFile7, mod, 'utf8')
+agentRoots = [{ id: 'live-s1' }]
+const mod7 = await import(pathToFileURL(copyFile7).href)
+const ctx7 = makeCtx()
+mod7.apply(ctx7)
+await new Promise((r) => setTimeout(r, 300))
+const board7 = await callRpc('get-task-board', {})
+check('孤儿清理：重启后不再恢复孤儿任务', !(board7.active || []).some((a) => a.sessionId === 'orphan-s1'), board7.active)
+check('孤儿清理：重启后 finished 记录仍在', (board7.finished || []).some((r) => r.sessionId === 'orphan-s1'), board7.finished)
 
 for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
 
