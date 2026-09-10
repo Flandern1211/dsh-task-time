@@ -234,9 +234,9 @@ if (uqSvc && typeof uqSvc.ask === 'function') {
   await uqSvc.ask({ questions: [{ id: 'q1', question: '请选择方案 A 还是 B？' }], agent: { id: 'dec-s2' } })
 }
 const rems2 = await callRpc('get-reminders', { since: 0 })
-const decision2 = (rems2.reminders || []).find((r) => r.needDecision && /请选择方案/.test(r.text))
+const decision2 = (rems2.reminders || []).find((r) => r.needDecision && /请前往 DSH/.test(r.text))
 check('通道2 userQuestions：提问产生提醒卡', !!decision2, rems2)
-check('通道2 userQuestions：文本含提问内容', decision2 && /请选择方案 A 还是 B/.test(decision2.text), decision2)
+check('通道2 userQuestions：文本为简短提示', decision2 && /请前往 DSH/.test(decision2.text), decision2)
 
 // 重复触发（20s 节流内）不应重复
 const before = (await callRpc('get-reminders', { since: 0 })).reminders.length
