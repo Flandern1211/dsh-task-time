@@ -415,6 +415,24 @@ node scripts/test-changes.mjs
 
 ---
 
+## 更新日志
+
+### v0.2.1 (2026-09-10)
+
+- **修复** `end-task` 缺少 history 截断，已完成记录可无限增长
+- **修复** 决策节流记录（`decisionAlerts`）只增不删导致内存泄漏 + 新决策被旧节流压制
+- **修复** 任务结束时未清理决策节流记录，影响同一会话的新任务
+- **修复** 跳过会话设置时丢弃已累积的任务计时，改为归档到已完成记录
+- **修复** `set-session-config`/`dismiss-session-setup` 中 `persistRecords()` 无 await，即时落盘保证不可靠
+- **修复** 3s tick 定时器可能重叠执行导致竞态，改为递归 `setTimeout`
+- **修复** `tools/pre-execute` 正则未锚定，子串匹配可误触发决策提醒
+
+### v0.2.0
+
+- 首个正式发布版本，完整功能集见上方功能概览
+
+---
+
 ## License
 
 MIT License — 详见 [LICENSE](LICENSE)

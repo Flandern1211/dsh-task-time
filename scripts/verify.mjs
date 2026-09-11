@@ -171,7 +171,7 @@ writeFileSync(STATE, JSON.stringify({
 
 const mod2 = await import(pathToFileURL(copyFile2).href)
 const ctx2 = makeCtx()
-agentRoots = [{ id: 'cfg-s1' }]
+agentRoots = [{ id: 'cfg-s1' }, { id: 'brand-new-session' }]
 mod2.apply(ctx2)
 await new Promise((r) => setTimeout(r, 300))
 
