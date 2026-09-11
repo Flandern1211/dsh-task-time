@@ -14,26 +14,29 @@ param(
 # -Silent appends <audio silent="true"/> to the toast XML.
 # -Sound sets a custom audio source, e.g. "ms-winsoundevent:Notification.Reminder"
 #   or "ms-winsoundevent:Notification.Looping.Alarm" (overrides -Silent).
+# -Launch sets the toast activation argument (e.g. dshjump:<sessionId>).
+#
+# This script stays alive after showing the toast and listens for the user's
+# click via the Activated event. When clicked, it writes the jump file to
+# $env:USERPROFILE\.dsh\dsh-task-time-pending-jump.json and brings DSH to
+# foreground, bypassing Electron's second-instance event chain entirely.
+# Exits after 60s or when the toast is dismissed/fails, whichever comes first.
 #
 # AppId (AUMID) matters: Windows 11 silently drops toasts shown under an AUMID
 # that has no installed app/shortcut behind it, even when Show() succeeds and
 # the notification count registry advances. The default therefore borrows the
 # DSH Desktop app's own AUMID ("ai.deepseek.dsh.desktop"), which the installer
 # registers and which Windows treats as a first-class notification source.
-# The plugin's historical own AUMID "DSH.dsh-task-time" is kept only as an
-# explicit opt-in (registry bootstrap below) for environments without DSH Desktop.
 $ErrorActionPreference = "Stop"
-# AUMID bootstrap: registry-only AppUserModelId entries are unreliable on Win11
-# (toasts may be dropped without error), so only bother for our own DSH.* ids;
-# never touch another app's registration.
 if ($AppId.StartsWith("DSH.")) {
   try {
     $appIdKey = New-Item -Path "HKCU:\SOFTWARE\Classes\AppUserModelId\$AppId" -Force
     $null = $appIdKey.SetValue("DisplayName", "DSH", "String")
-  } catch {
-    # registry unwritable - still try to show the toast
-  }
+  } catch { }
 }
+# Extract sessionId from Launch (dshjump:<sessionId>)
+$sessionId = ""
+if ($Launch -match '^dshjump:(.+)$') { $sessionId = $Matches[1] }
 try {
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
   $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
@@ -57,7 +60,60 @@ try {
   }
   $toast = New-Object Windows.UI.Notifications.ToastNotification $template
   if ($Tag) { $toast.Tag = $Tag }
-  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($toast) | Out-Null
+  # ---------- Event-driven activation ----------
+  # Stay alive and wait for the user to click/dismiss the toast.
+  # When clicked: write jump file + bring DSH to foreground.
+  # Exits after 60s timeout or on dismiss/fail.
+  $doneEvent = New-Object System.Threading.ManualResetEvent $false
+  $global:TT_ACTIVATED = $false
+  $global:TT_SESSION_ID = $sessionId
+  # Use Register-ObjectEvent for reliable WinRT event handling in PowerShell 5.1
+  $activatedHandler = Register-ObjectEvent -InputObject $toast -EventName Activated -MessageData $doneEvent -Action {
+    $global:TT_ACTIVATED = $true
+    [System.Threading.ManualResetEvent]$Event.MessageData.Set()
+  }
+  $doneHandler = Register-ObjectEvent -InputObject $toast -EventName Dismissed -MessageData $doneEvent -Action {
+    [System.Threading.ManualResetEvent]$Event.MessageData.Set()
+  }
+  $failedHandler = Register-ObjectEvent -InputObject $toast -EventName Failed -MessageData $doneEvent -Action {
+    [System.Threading.ManualResetEvent]$Event.MessageData.Set()
+  }
+  # Show the toast
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($AppId).Show($toast)
+  # Wait for user interaction or timeout (60 seconds)
+  $doneEvent.WaitOne(60000) | Out-Null
+  # Clean up event subscriptions
+  try { Unregister-Event -SourceIdentifier $activatedHandler.Name -ErrorAction SilentlyContinue } catch { }
+  try { Unregister-Event -SourceIdentifier $doneHandler.Name -ErrorAction SilentlyContinue } catch { }
+  try { Unregister-Event -SourceIdentifier $failedHandler.Name -ErrorAction SilentlyContinue } catch { }
+  # If user clicked the toast, write jump file and foreground DSH
+  if ($global:TT_ACTIVATED -and $global:TT_SESSION_ID) {
+    $jumpDir = Join-Path $env:USERPROFILE ".dsh"
+    $null = New-Item -Path $jumpDir -ItemType Directory -Force -ErrorAction SilentlyContinue
+    $jumpFile = Join-Path $jumpDir "dsh-task-time-pending-jump.json"
+    $jumpData = @{ sessionId = $global:TT_SESSION_ID; ts = [DateTimeOffset]::Now.ToUnixTimeMilliseconds() }
+    $jumpText = $jumpData | ConvertTo-Json -Compress
+    [System.IO.File]::WriteAllText($jumpFile, $jumpText)
+    # Bring DSH Desktop to foreground
+    try {
+      $dshProcess = Get-Process | Where-Object { $_.MainWindowTitle -like "*DSH*" -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+      if ($dshProcess) {
+        Add-Type -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+'@ -Name Win32 -Namespace Toast -ErrorAction SilentlyContinue
+        if ([Toast.Win32]::ShowWindowAsync($dshProcess.MainWindowHandle, 9)) { # SW_RESTORE
+          [Toast.Win32]::SetForegroundWindow($dshProcess.MainWindowHandle) | Out-Null
+        }
+      }
+    } catch {
+      # Fallback: try Shell.Application
+      try {
+        $shell = New-Object -ComObject "Shell.Application"
+        $shell.Windows() | Where-Object { $_.LocationName -like "*DSH*" } | ForEach-Object { $_.Visible = $true }
+      } catch { }
+    }
+  }
   exit 0
 } catch {
   exit 1

@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-time",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "任务用时与提醒：强制设置计划用时+提醒间隔，连续计时，定时提醒（提示音+外部通知，提醒卡可点击跳转会话），决策提醒，任务面板（点击跳转会话），本地记录持久化。",
   "type": "module",
   "main": "lib/index.js",
