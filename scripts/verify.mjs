@@ -17,12 +17,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const work = mkdtempSync(join(tmpdir(), 'dsh-tt-verify-'))
 const STATE = join(work, 'state.json')
 const LEGACY = join(work, 'legacy.json')
+const MODULES = join(work, 'modules.json')
 
 const src = readFileSync(join(__dirname, '..', 'lib', 'index.js'), 'utf8')
 let mod = src
   .replace(
     "const RECORDS_FILE = join(homedir(), '.dsh', 'dsh-task-time-records.json')",
     `const RECORDS_FILE = ${JSON.stringify(STATE)}`
+  )
+  .replace(
+    "const MODULE_CONFIG_FILE = join(homedir(), '.dsh', 'dsh-task-time-modules.json')",
+    `const MODULE_CONFIG_FILE = ${JSON.stringify(MODULES)}`
   )
   .replace(
     /const legacyCandidates = \[[\s\S]*?\]/,
@@ -152,7 +157,7 @@ const copyFile2 = join(work, 'index2.mjs')
 writeFileSync(copyFile2, mod, 'utf8')
 writeFileSync(STATE, JSON.stringify({
   records: [],
-  defaults: { reminderIntervalMinutes: 25, externalAlert: false },
+  defaults: { reminderIntervalMinutes: 25, plannedMinutes: 40, externalAlert: false },
   configs: {
     'cfg-s1': { taskName: '已配置任务', plannedMinutes: 30, reminderIntervalMinutes: 12, externalAlert: false, configured: true },
     'old-no-configured': { taskName: '旧格式配置', plannedMinutes: 45 },
@@ -179,6 +184,13 @@ const board2 = await callRpc('get-task-board', {})
 check('状态恢复：active 含运行中任务', Array.isArray(board2.active) && board2.active.some((a) => a.sessionId === 'cfg-s1'), board2)
 check('状态恢复：active 任务运行中', board2.active.some((a) => a.sessionId === 'cfg-s1' && a.running === true), board2)
 check('状态恢复：defaults 恢复 25 分钟', ((await callRpc('get-config', {}))).reminderIntervalMinutes === 25, 'defaults not 25')
+const cfgRestored = await callRpc('get-config', {})
+check('状态恢复：默认计划用时恢复 40 分钟', cfgRestored.plannedMinutes === 40, JSON.stringify(cfgRestored))
+check(
+  '外部通知：legacy externalAlert 不再出现在全局配置里（只由模块开关控制）',
+  !('externalAlert' in cfgRestored),
+  JSON.stringify(cfgRestored)
+)
 
 const pendCfg = await callRpc('get-pending-setup', { sessionId: 'cfg-s1' })
 check('configured 会话不再弹窗', pendCfg.pending === false, pendCfg)
@@ -186,6 +198,8 @@ const pendDismissed = await callRpc('get-pending-setup', { sessionId: 'dismissed
 check('dismissed 会话不再弹窗', pendDismissed.pending === false, pendDismissed)
 const pendNew = await callRpc('get-pending-setup', { sessionId: 'brand-new-session' })
 check('新会话仍弹窗', pendNew.pending === true, pendNew)
+check('设置弹窗：下发默认计划用时（预填值）', pendNew.defaultPlannedMinutes === 40, JSON.stringify(pendNew))
+check('设置弹窗：下发默认提醒间隔（预填值）', pendNew.reminderIntervalMinutes === 25, JSON.stringify(pendNew))
 
 // 停第二个实例
 for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
@@ -337,7 +351,56 @@ check('孤儿清理：重启后 finished 记录仍在', (board7.finished || []).
 
 for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
 
-// ---------- 清理 ----------
+// ---------- 场景 6：误跳过可恢复（reopen-session-setup） ----------
+const copyFile8 = join(work, 'index8.mjs')
+writeFileSync(copyFile8, mod, 'utf8')
+writeFileSync(STATE, JSON.stringify({ records: [], defaults: { reminderIntervalMinutes: 10 }, configs: {}, dismissed: [], tasks: {}, history: {} }, null, 2))
+
+const mod8 = await import(pathToFileURL(copyFile8).href)
+const ctx8 = makeCtx()
+agentRoots = [{ id: 'reopen-s1' }]
+mod8.apply(ctx8)
+await new Promise((r) => setTimeout(r, 300))
+
+check('恢复：新会话初始为待设置', (await callRpc('get-pending-setup', { sessionId: 'reopen-s1' })).pending === true)
+const stBefore = await callRpc('get-status', { sessionId: 'reopen-s1' })
+check('状态：未设置会话 configured=false', stBefore && stBefore.active === false && stBefore.configured === false, stBefore)
+
+await callRpc('dismiss-session-setup', { sessionId: 'reopen-s1' })
+check('恢复：跳过后不再弹窗', (await callRpc('get-pending-setup', { sessionId: 'reopen-s1' })).pending === false)
+
+const re1 = await callRpc('reopen-session-setup', { sessionId: 'reopen-s1' })
+check('恢复：reopen 返回 ok', !!(re1 && re1.ok === true), re1)
+check('恢复：reopen 后重新弹窗', (await callRpc('get-pending-setup', { sessionId: 'reopen-s1' })).pending === true)
+
+await callRpc('set-session-config', { sessionId: 'reopen-s1', taskName: '恢复测试', plannedMinutes: 20, reminderIntervalMinutes: 5 })
+const stAfter = await callRpc('get-status', { sessionId: 'reopen-s1' })
+check('状态：已设置会话 configured=true', stAfter && stAfter.configured === true, stAfter)
+
+const re2 = await callRpc('reopen-session-setup', { sessionId: 'reopen-s1' })
+check('恢复：已配置会话 reopen 被拒绝（不弹窗）', !!(re2 && re2.ok === false && re2.configured === true), re2)
+check('恢复：已配置会话仍不弹窗', (await callRpc('get-pending-setup', { sessionId: 'reopen-s1' })).pending === false)
+
+for (const off of disposers.splice(0)) { try { off() } catch (e) {} }
+
+// ---------- 场景 7：设置弹窗不再「点遮罩＝跳过」（源码级回归） ----------
+const clientSrc = readFileSync(join(__dirname, '..', 'lib', 'client.js'), 'utf8')
+check(
+  '弹窗：遮罩点击不再直接 skip',
+  !/className:\s*"tt-setup",\s*onClick:\s*(dismiss|skip)\b/.test(clientSrc),
+  '遮罩 onClick 仍然绑定到 dismiss/skip'
+)
+check(
+  '弹窗：跳过按钮仍然存在（只由按钮触发）',
+  /className:\s*"tt-setup-skip",\s*onClick:\s*skip\b/.test(clientSrc),
+  '未找到显式「跳过」按钮'
+)
+check(
+  '弹窗：提供重开入口 RPC',
+  /reopen-session-setup/.test(clientSrc),
+  'client 未调用 reopen-session-setup'
+)
+
 try { rmSync(work, { recursive: true, force: true }) } catch (e) {}
 
 // ---------- 输出 ----------
