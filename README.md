@@ -493,6 +493,14 @@ node scripts/test-changes.mjs
 
 ## 更新日志
 
+### v0.2.5
+
+- **改进** 系统提示词同步双通道行为：原来写的是「含系统提示音与桌面通知」，v0.2.4 改成按人在不在 DSH 分流后文案没跟上——现在改为「人在 DSH 里时发界面内提醒卡 + 提示音，不在 DSH 里时发系统桌面通知；需要决策时界面内常驻红卡，不在 DSH 里时额外发桌面通知」，避免 agent 向用户转述错误的通知方式
+- **清理** 移除调试期留下的 `console.log`：host 端 6 处（`get-pending-setup` 每次弹窗轮询都打一行、两条 stale waitingDecision 分支、三处 cleared waitingDecision）、client 端 3 处（`SetupManager poll` 每 2 秒打一行并 `JSON.stringify` 全部会话 id、`get-pending-setup` 结果、approval/request 到达）——这些在 DSH 控制台里会持续刷屏，且 `SetupManager poll` 的字符串拼接本身有开销
+- **清理** 保留 4 处真正有诊断价值的日志（模块配置加载/保存失败的 `console.warn`、`session/event` 与 `approval/request` 处理异常的 `console.error`）
+- 移除仓库里的临时文件：`.npm-cache/`（暂存的 npm 缓存，已加入 `.gitignore`）与 `_dbg_channels.mjs`（调试探针，功能已被 `scripts/verify-channels.mjs` 覆盖）
+- 顺带修正 `clearWaitingDecision` 三处调用点残留的缩进
+
 ### v0.2.4
 
 - **修复** 设置弹窗误判为「跳过」：遮罩（弹窗外区域）点击不再等于跳过——以前点一下弹窗外区域就会永久跳过本次设置，鼠标滑出窗口后点回窗口、或在输入框里拖拽选字时松手到卡片外，都会命中这条路径
