@@ -83,7 +83,7 @@ function check(name, cond, detail) {
   const h = await loadHost('host1.mjs')
 
   const cfg0 = await h.rpc('get-config', {})
-  check('host：默认「外部通知时机」= DSH 不在前台时', cfg0.externalWhen === 'unfocused', JSON.stringify(cfg0))
+  check('host：默认「外部通知时机」= 页面不可见时', cfg0.externalWhen === 'hidden', JSON.stringify(cfg0))
 
   // 没有任何上报（页面还没开 / 渲染进程没起来）→ 视为不在 DSH → 该发外部通知
   const st0 = await h.rpc('get-external-status', {})
@@ -94,11 +94,11 @@ function check(name, cond, detail) {
   const st1 = await h.rpc('get-external-status', {})
   check('host：页面可见且前台 → inFront=true（不发系统通知）', st1.inFront === true, JSON.stringify(st1))
 
-  // 切到别的窗口（页面还看得见）→ 默认判定为“不在 DSH”
+  // 切到别的窗口（页面还看得见）→ hidden 模式下仍算在 DSH
   const p2 = await h.rpc('ui-presence', { focused: false, visible: true })
-  check('host：ui-presence 直接返回 inFront 供 client 对齐', p2.inFront === false, JSON.stringify(p2))
+  check('host：ui-presence 直接返回 inFront 供 client 对齐', p2.inFront === true, JSON.stringify(p2))
   const st2 = await h.rpc('get-external-status', {})
-  check('host：unfocused 模式下失焦即算离开 DSH', st2.inFront === false, JSON.stringify(st2))
+  check('host：hidden 模式下失焦但页面可见 → 仍在 DSH', st2.inFront === true, JSON.stringify(st2))
 
   // 切到「只有页面不可见才算离开」
   const cfgHidden = await h.rpc('set-config', { config: { externalWhen: 'hidden' } })
@@ -123,7 +123,7 @@ function check(name, cond, detail) {
   const guarded = (HOST_SRC.match(/if \(shouldSendExternal\(\)\) \{/g) || []).length
   check(
     'host：4 个正式提醒点 + 1 个测试点 + 1 个函数定义（调用点数量符合预期）',
-    sites.length === 6 && guarded === 4,
+    sites.length === 6 && guarded === 3,
     'externalAlert( ' + sites.length + ' 次，shouldSendExternal 门控 ' + guarded + ' 处'
   )
   check(

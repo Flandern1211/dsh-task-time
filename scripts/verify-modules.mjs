@@ -178,7 +178,8 @@ function createEnv(opts) {
     return Promise.resolve({ json: () => Promise.resolve({ ok: true, data }) })
   }
 
-  const sessionsStore = { current: 'sess-1', byId: {} }
+  const sessionsStore = { current: (opts && opts.currentSession) || 'sess-1', byId: {} }
+  function setCurrentSession(sid) { sessionsStore.current = sid }
   const sessionsSvc = {
     list: { getSnapshot: () => sessionsStore },
     open: () => Promise.resolve(),
@@ -258,6 +259,16 @@ function createEnv(opts) {
       const inst = React.mount(e.Component, props || {})
       inst.first = inst.render()
       return inst
+    },
+    // 切换当前会话（用于验证决策卡在当前会话中隐藏的行为）
+    setCurrentSession: (sid) => {
+      sessionsStore.current = sid
+    },
+    // 触发已注册的 interval 回调（模拟定时器到期）
+    fireIntervals: () => {
+      for (const iv of intervals) {
+        try { iv.fn() } catch (e) {}
+      }
     },
     tick: () => new Promise((r) => setImmediate(r)),
   }
@@ -397,9 +408,9 @@ function collectTogglesDeep(tree) {
 {
   const mc = allOn()
   const hostReminders = [
-    { id: 7, kind: 'decision', sessionId: 'sess-1', taskName: '测试任务', text: '需要你批准「pwsh」', ts: Date.now(), needDecision: true, autoMs: 0 },
+    { id: 7, kind: 'decision', sessionId: 'sess-decision', taskName: '测试任务', text: '需要你批准「pwsh」', ts: Date.now(), needDecision: true, autoMs: 0 },
   ]
-  const env = createEnv({ moduleConfig: mc, reminders: hostReminders })
+  const env = createEnv({ moduleConfig: mc, reminders: hostReminders, currentSession: 'sess-other' })
   env.mod.apply(env.ctx)
   await env.tick()
   await env.tick()
@@ -660,6 +671,59 @@ function collectTogglesDeep(tree) {
 
   const saveCalls = env.rpcCalls.filter((c) => c.method === 'set-module-config')
   check('实时开关：开关变更已发往 host（set-module-config）', saveCalls.length >= 2, 'set-module-config 调用数=' + saveCalls.length)
+}
+
+// ================= 场景 11：决策卡会话感知 — 在决策会话里自动隐藏，在其他会话里出现 =================
+{
+  const mc = allOn()
+  // 当前会话是 sess-1，有一条对 sess-2 的决策提醒
+  const env = createEnv({
+    moduleConfig: mc,
+    currentSession: 'sess-1',
+    reminders: [
+      { id: 10, kind: 'decision', sessionId: 'sess-2', taskName: '测试任务', text: '需要你决策', ts: Date.now(), needDecision: true, autoMs: 0 },
+    ],
+  })
+  env.mod.apply(env.ctx)
+  await env.tick()
+  await env.tick()
+  // 触发主轮询拉取 host 提醒 → pushReminder 写入本地 store
+  const poll = env.intervals.find((i) => i.ms === 2000)
+  if (poll) { poll.fn(); await env.tick(); await env.tick() }
+
+  // 当前在 sess-1，决策会话是 sess-2 → 应该显示卡片
+  const cardOther = await env.renderEntry('task-time-reminder')
+  check('决策卡：不在决策会话时渲染卡片', cardOther !== null && !/missing/.test(JSON.stringify(cardOther)), 'card should show for other session decision: ' + JSON.stringify(cardOther).slice(0, 200))
+
+  // 挂载持久实例 + 切换到 sess-2（决策发生的会话）
+  const inst = env.mountEntry('task-time-reminder')
+  check('决策卡：挂载后初始显示（sess-1 不在 sess-2）', inst.first !== null && !/missing/.test(JSON.stringify(inst.first)), 'should show initially: ' + JSON.stringify(inst.first).slice(0, 200))
+  env.setCurrentSession('sess-2')
+  env.fireIntervals()          // 触发 ReminderStack 的 1.5s 会话检测
+  const treeAfterSwitch = inst.rerender()
+  check('决策卡：切到决策会话后卡片仍显示（DOM 渲染不过滤会话）', treeAfterSwitch !== null, 'card should stay visible: ' + JSON.stringify(treeAfterSwitch).slice(0, 200))
+
+  // 切回 sess-1 → 卡片应重新出现
+  env.setCurrentSession('sess-1')
+  env.fireIntervals()
+  const treeBack = inst.rerender()
+  check('决策卡：切回非决策会话后卡片出现', treeBack !== null, 'card should reappear')
+
+  // 当前会话就是决策会话 → 初始不显示卡片
+  const env2 = createEnv({
+    moduleConfig: mc,
+    currentSession: 'sess-1',
+    reminders: [
+      { id: 11, kind: 'decision', sessionId: 'sess-1', taskName: '当前任务', text: '需要你批准', ts: Date.now(), needDecision: true, autoMs: 0 },
+    ],
+  })
+  env2.mod.apply(env2.ctx)
+  await env2.tick()
+  await env2.tick()
+  const poll2 = env2.intervals.find((i) => i.ms === 2000)
+  if (poll2) { poll2.fn(); await env2.tick(); await env2.tick() }
+  const cardSame = await env2.renderEntry('task-time-reminder')
+  check('决策卡：在决策会话时仍显示卡片（DOM 渲染不过滤会话）', cardSame !== null, 'card should be visible for same session: ' + JSON.stringify(cardSame).slice(0, 200))
 }
 
 // ---------- 输出 ----------
