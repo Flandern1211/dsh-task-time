@@ -4,7 +4,7 @@
 
 [![DSH Plugin](https://img.shields.io/badge/DSH-Plugin-4ade80?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)](package.json)
+[![Version](https://img.shields.io/badge/version-0.2.8-blue?style=flat-square)](package.json)
 
 ---
 
@@ -31,15 +31,16 @@
 | ✅ **任务计划设置** | 新会话自动弹出设置窗口，填写任务名、计划用时、提醒间隔（只有点「跳过」才会跳过，误触不会） |
 | ✅ **连续计时** | 仅模型运行时累加计时，暂停（等待用户输入）不计时，恢复后续计 |
 | ✅ **定时提醒** | 按累计运行时间间隔提醒：在 DSH 里走内部通知（提醒卡 + 提示音），不在 DSH 里才发系统通知 |
+| ✅ **提醒卡滞留时长可配置** | 普通提醒卡显示多久后自动消散可设（2/3/4/5/8/10/15/30 秒、自定义 1–600 秒或「常驻」），默认 4 秒；决策红卡恒常驻 |
 | ✅ **提醒卡可点击跳转** | 点击界面提醒卡直接跳转到该提醒所属的会话 |
-| ✅ **系统通知可点击跳转** | Windows 通知横幅点击后自动跳转到对应会话 |
+| ✅ **系统通知点击后自动定位** | 点击 Windows 通知横幅会把 DSH 拉到前台，客户端检测到窗口重新聚焦后自动跳到「等你决策」的会话 |
 | ✅ **超时警告** | 超过计划用时自动发出超时提醒 |
 | ✅ **决策提醒** | 模型需要决策时，红色「需要你决策」提醒（常驻）+ 系统桌面通知 |
 | ✅ **任务面板** | 左下角 🗂 按钮打开，进行中 / 已完成分组，点击跳转会话 |
 | ✅ **Composer Dock 状态条** | 输入框下方实时显示任务名、运行状态、用时、计划时间、提醒次数 |
 | ✅ **浏览器标题闪烁** | 需要决策时浏览器标签页标题闪烁提醒 |
 | ✅ **内部通知 / 外部通知分流** | 人在 DSH 里只发内部通知（提醒卡 + 界面内提示音），人不在 DSH 里才发系统通知，并可配置「外部通知时机」 |
-| ✅ **设置页面** | 模块开关 + 该模块最需要的配置：任务用时里配默认计划用时 / 默认提醒间隔，提醒里配外部通知时机 / AUMID / 测试通知 |
+| ✅ **设置页面** | 模块开关 + 该模块最需要的配置：任务用时里配默认计划用时 / 默认提醒间隔，提醒里配提醒卡滞留时长 / 外部通知时机 / AUMID / 测试通知 |
 | ✅ **持久化** | 任务记录写入 `~/.dsh/dsh-task-time-records.json`，重启后保留 |
 | ✅ **页面标题闪烁** | 有决策待处理时标题闪烁 ❓ 需要你决策 |
 | ✅ **浏览器通知** | 不在当前标签页时通过浏览器 Notification API 推送提醒 |
@@ -126,10 +127,13 @@ dsh plugin add .
 
 ### 提醒卡系统
 
-- **普通提醒卡**：右下角堆叠显示，约 4 秒后自动淡出消散
-- **决策提醒卡**：红色常驻，不自动消散，只能点 × 关闭
-- **点击跳转**：点击提醒卡 → 跳转到对应会话 → 卡片消失
+- **提醒卡滞留时长可配置**：设置 → 提醒 → 内部通知配置 →「提醒卡滞留时长」，预设 2/3/4/5/8/10/15/30 秒或自定义（1–600 秒），也可选 **「常驻（不自动消散）」**（`= 0`，只能点 × 或点击卡片关闭）；默认 **4 秒**，对齐 DSH 内置 Toast 的保持时长
+- **普通提醒卡**：右下角堆叠显示，按上面配置的滞留时长自动淡出消散（淡出 1 秒后移除）
+- **提醒卡**：一个会话最多一张（同一会话反复决策会替换旧卡，不会叠卡）；定时/超时/结束/设置完成类卡片都按配置的滞留时长消散；client 本地生成的提示卡（删除/结束/移除失败、测试通知）同样跟随该配置
+- **决策提醒卡**：红色常驻，**不自动消散**（固定 `autoMs=0`，不受滞留时长配置影响），只能点 × 关闭；决策处理完（host 推「决策已处理」）后自动收掉，标题停止闪烁
+- **点击跳转**：点击提醒卡 → 跳转到对应会话 → 卡片消失（跳转同时清掉该会话的决策卡）
 - **点击 ×**：仅关闭卡片，不跳转
+- 提醒卡由「提醒 → 内部通知」开关统一控制；关掉后右下角不再出现任何卡片（也不会再走直写 DOM 的渲染路径）
 
 ### 通知：内部 / 外部两条通道
 
@@ -138,7 +142,7 @@ dsh plugin add .
 | 人在哪 | 通道 | 表现 |
 |--------|------|------|
 | **在 DSH 里**（页面可见，默认还要求窗口在前台） | 内部通知 | 右下角提醒卡（决策时红色常驻）+ **界面内提示音**（WebAudio 合成，不依赖外部文件）+ 需要决策时标题闪烁 |
-| **不在 DSH 里**（切到别的窗口 / 最小化 / 关掉页面） | 外部通知 | Windows 系统 Toast（含系统提示音）+ 浏览器通知，点击可跳回会话 |
+| **不在 DSH 里**（切到别的窗口 / 最小化 / 关掉页面） | 外部通知 | Windows 系统 Toast（含系统提示音）+ 浏览器通知，点击通知后回到 DSH 会自动定位到待决策会话 |
 
 - client 每 2 秒（以及焦点/可见性变化时）向 host 上报一次 `ui-presence`（focused / visible）；host 超过 10 秒收不到上报就按「人不在 DSH」处理，保证页面关掉后仍然收得到系统通知
 - 判定结果由 host 统一计算并通过 `ui-presence` 的返回值同步回 client，两边结论一致：**响了内部提示音就不会再发系统通知，反之亦然**
@@ -152,6 +156,7 @@ dsh plugin add .
 - 可一键发送测试通知验证链路
 - Windows 11 默认静默丢弃未注册应用身份的通知，插件已做适配
 - 只在**人不在 DSH 里**时才发（见上一节的通道表）
+- **点击通知后回到 DSH**：通知横幅带 `dshjump:<sessionId>`，点击会把 DSH 窗口置前；客户端在检测到「窗口重新获得焦点」时，先消费 `get-pending-jump` 的跳转请求，没有请求就直接跳到「正在等你决策」的会话。之所以不做事件回调：Windows PowerShell 5.1 无法订阅 WinRT 通知事件（见「已知问题」）
 
 ### 外部通知声音
 
@@ -239,7 +244,9 @@ dsh plugin add .
   ☑ 内部通知（在 DSH 里：提醒卡 + 提示音）
   ☑ 外部通知（不在 DSH 里：系统 Toast + AUMID）   ← 外部通知只有这一个开关
   ☑ 标题闪烁（需要决策时）
-  ☑ Toast 点击跳转（文件兜底 + 轮询消费）
+  Toast 点击跳转（点通知回到 DSH 后自动定位到待决策会话）
+  ─ 内部通知配置（在 DSH 里：提醒卡 + 提示音）
+    提醒卡滞留时长   [4 秒 ▾]（2/3/4/5/8/10/15/30 秒 / 常驻（不自动消散）/ 自定义…）
   ─ 外部通知配置
     外部通知时机   [DSH 不在前台时 ▾]（或「只有 DSH 页面不可见时」）
     当前状态       [在 DSH 里 → 只发内部通知 / 不在 DSH → 会发系统通知]
@@ -256,7 +263,7 @@ dsh plugin add .
 |------|------|
 | 只开 **提醒**、关掉 **任务用时** | 只保留决策提醒（红卡 + 系统通知），不显示设置弹窗、任务面板、Dock 状态条 |
 | 关掉主开关 | 该模块下所有子开关被屏蔽；子开关保留各自状态，主开关重新打开后恢复原状 |
-| 关掉 **内部通知** | 右下角不再显示任何提醒卡、不再响界面内提示音（系统通知仍可用） |
+| 关掉 **内部通知** | 右下角不再显示任何提醒卡（决策红卡、定时/超时/结束提醒卡都归它管）、不再响界面内提示音（系统通知仍可用） |
 | 关掉 **外部通知** | 人不在 DSH 时不再发系统 Toast / 浏览器通知（「发送测试通知」按钮仍可用） |
 | 关掉 **任务用时** | 不再计时、不产生"任务完成"提醒（没有任务就没有完成事件） |
 
@@ -274,6 +281,7 @@ dsh plugin add .
 |--------|------|------|--------|
 | 默认计划用时 | 任务用时 → 默认配置 | 新会话「设置任务计划」弹窗的预填值（预设下拉或自定义） | 60 分钟 |
 | 默认提醒间隔 | 任务用时 → 默认配置 | 累计运行多长时间提醒一次（分钟），也是设置弹窗的预填值 | 10 |
+| 提醒卡滞留时长 | 提醒 → 内部通知配置 | 普通提醒卡显示多久后自动消散（秒，1–600；0 = 常驻不自动消散）；决策红卡恒为常驻，不受影响 | 4 |
 | 内部通知 | 提醒 → 模块开关 | 在 DSH 里时的提醒卡 + 界面内提示音 | 开启 |
 | 外部通知 | 提醒 → 模块开关 | 不在 DSH 里时的系统通知（**唯一开关**，开/关只看它） | 开启 |
 | 外部通知时机 | 提醒 → 外部通知配置 | `DSH 不在前台时`（默认）/ `只有 DSH 页面不可见时` | `unfocused` |
@@ -313,14 +321,23 @@ dsh plugin add .
 
 ```
 {
-  "records": [ ... ],      // 已完成记录
+  "records": [ ... ],       // 已完成记录
   "configs": { ... },       // 会话配置（含 configured 标记）
-  "dismissed": [ ... ],    // 跳过设置的会话列表
+  "dismissed": [ ... ],     // 跳过设置的会话列表
   "tasks": { ... },         // 进行中任务
   "history": { ... },       // 会话历史
-  "defaults": { ... }       // 全局默认配置
+  "rootSessions": [ ... ],  // 根会话 id（用于状态裁剪）
+  "defaults": {             // 全局默认配置
+    "reminderIntervalMinutes": 10,      // 默认提醒间隔（分钟）
+    "plannedMinutes": 60,               // 默认计划用时（分钟）
+    "reminderAutoDismissSeconds": 4,    // 提醒卡滞留时长（秒，0 = 常驻不自动消散）
+    "toastAppId": "ai.deepseek.dsh.desktop",
+    "externalWhen": "unfocused"         // unfocused | hidden
+  }
 }
 ```
+
+> `configs` / `dismissed` / `rootSessions` 按会话累积，加载时会裁剪到 200 条（活跃会话优先保留）；只回写上面这些已知字段，历史遗留键不再被写回磁盘。
 
 ---
 
@@ -329,18 +346,22 @@ dsh plugin add .
 ```
 dsh-task-time/
 ├── lib/
-│   ├── index.js          # Host 端：计时、提醒、持久化、RPC、工具注册、prompt section
-│   ├── index.d.ts        # Host 端类型声明
-│   ├── client.js         # Client 端：浏览器 UI（React）、提醒卡、任务面板、设置页
-│   ├── client.d.ts       # Client 端类型声明
-│   └── toast.ps1         # Windows WinRT Toast 通知脚本（PowerShell 5.1+）
+│   ├── index.js             # Host 端：计时、提醒、持久化、RPC、工具注册、prompt section
+│   ├── index.d.ts           # Host 端类型声明
+│   ├── client.js            # Client 端：浏览器 UI（React）、提醒卡、任务面板、设置页
+│   ├── client.d.ts          # Client 端类型声明
+│   └── toast.ps1            # Windows WinRT Toast 通知脚本（PowerShell 5.1+）
 ├── scripts/
-│   ├── verify.mjs        # 自动验证脚本（mock 运行时，5 个场景）
-│   └── test-changes.mjs  # 变更合规性检查
-├── cordis.patch.yml      # 插件 bundle patch（插入 host composition）
-├── package.json          # npm 包配置
-├── README.md             # 本文件
-├── LICENSE               # MIT License
+│   ├── verify.mjs           # Host 全链路：legacy 迁移 / 状态恢复 / 决策提醒 / 写入 / 孤儿清理
+│   ├── verify-modules.mjs   # 模块开关 + 默认配置 + 决策检测三通道 + 通知跳转链路
+│   ├── verify-channels.mjs  # 内部/外部通知分流（无头实例 + Toast 打桩）
+│   ├── verify-timing.mjs    # 计时 / 间隔与超时提醒 / 结束统计 / 配置边界 / 提醒卡滞留时长
+│   ├── verify-dom.mjs       # 客户端 UI（mock React + DOM）：提醒卡生命周期、设置弹窗、Dock 状态条
+│   └── test-changes.mjs     # 变更合规性检查（源码级断言）
+├── cordis.patch.yml         # 插件 bundle patch（插入 host composition）
+├── package.json             # npm 包配置
+├── README.md                # 本文件
+├── LICENSE                  # MIT License
 └── .gitignore
 ```
 
@@ -385,7 +406,7 @@ dsh-task-time/
 │  ┌─────────────────────────────────────────────┐  │
 │  │  Windows Toast (toast.ps1 via powershell)    │  │
 │  │  • WinRT ToastNotificationManager            │  │
-│  │  • 点击 → second-instance → pendingJump → 跳转 │  │
+│  │  • 点击 → DSH 窗口置前 → client 焦点检测 → 跳到待决策会话 │  │
 │  └─────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
 ```
@@ -417,19 +438,27 @@ npm run build
 ### 验证
 
 ```bash
-# 运行完整自动验证（mock 运行时，无需 DSH Desktop）
-node scripts/verify.mjs
+# 运行全部套件（mock 运行时，无需 DSH Desktop；不会真的弹系统通知）
+npm test
 
-# 运行变更合规检查
-node scripts/test-changes.mjs
+# 单独跑某个套件
+node scripts/verify.mjs            # Host 全链路
+node scripts/verify-modules.mjs    # 模块开关 + 默认配置 + 决策三通道
+node scripts/verify-channels.mjs   # 内部/外部通知分流
+node scripts/verify-timing.mjs     # 计时 / 提醒 / 配置边界 / 滞留时长
+node scripts/verify-dom.mjs        # 客户端 UI（提醒卡生命周期、设置弹窗、Dock 状态条）
+node scripts/test-changes.mjs      # 变更合规性检查
 ```
 
-验证脚本覆盖 5 个场景：
+`npm test` 串跑 6 个套件（`verify` → `verify-modules` → `verify-channels` → `test-changes` → `verify-timing` → `verify-dom`），全部通过才返回 0：
+
 1. **Legacy 迁移** — 旧格式记录文件迁移
 2. **状态恢复** — configs/dismissed/tasks/history/defaults 重启恢复
 3. **决策提醒** — 三通道（approval/userQuestions/tools-pre-execute）+ 20s 节流
 4. **持久化写入** — 配置写入 + 重加载验证
 5. **孤儿任务清理** — 已删除会话的残留任务清理
+6. **计时与提醒** — 运行/暂停累加、间隔与超时提醒去重、结束统计、配置边界（含提醒卡滞留时长 0/负数/过大值）
+7. **客户端 UI** — 提醒卡渲染与生命周期（按配置滞留时长消散、常驻卡不消散）、决策卡去重、设置弹窗校验、Dock 状态条各状态
 
 ### 部署
 
@@ -467,18 +496,20 @@ node scripts/test-changes.mjs
 | `get-pending-sessions` | 查询所有待设置会话 |
 | `get-status` | 获取某会话计时状态 |
 | `get-reminders` | 获取增量提醒 |
-| `get-pending-jump` | 获取待处理的 toast 点击跳转 |
+| `get-pending-jump` | 获取待处理的 toast 点击跳转（兼容/扩展通道，见「已知问题」） |
+| `get-latest-decision-session` | 当前「等你决策」的会话（点击通知回到 DSH 后用它定位） |
 | `get-config` | 获取全局配置 |
-| `set-config` | 设置全局配置 |
+| `set-config` | 设置全局配置（非法值直接忽略：提醒间隔/计划用时必须是 >0 的分钟数；`reminderAutoDismissSeconds` 必须是 >=0 的秒数，0 = 常驻，过大夹到 600） |
 | `get-session-config` | 获取会话配置 |
-| `set-session-config` | 设置会话配置 |
+| `set-session-config` | 设置会话配置（计划用时必填，缺失/<=0 返回 `ok:false` + 可读错误） |
 | `dismiss-session-setup` | 跳过会话设置（仅由「跳过」按钮调用） |
 | `reopen-session-setup` | 撤销「已跳过」，重新打开设置弹窗（计时条「⚙ 设置计划」） |
-| `get-history` | 获取会话历史 |
+| `get-history` | 获取会话历史（保留接口，客户端暂未调用） |
+| `get-pending-sessions` | 查询所有待设置会话（保留接口，客户端暂未调用） |
 | `get-task-board` | 获取任务面板数据 |
 | `end-task` | 结束任务 |
 | `drop-task` | 移除残留任务 |
-| `delete-task-record` | 删除已完成记录 |
+| `delete-task-record` | 删除已完成记录（同时清掉 history 并落盘） |
 | `clear-task-records` | 清空全部已完成记录 |
 | `test-toast` | 测试通知 |
 | `trigger-decision-alert` | 触发决策提醒 |
@@ -487,11 +518,37 @@ node scripts/test-changes.mjs
 
 - **Windows 11 通知静默丢弃**：未注册 AUMID 的通知可调用成功但横幅不显示，默认身份为 DSH Desktop 的已注册身份
 - **PowerShell 5.1 编码**：`toast.ps1` 保持纯 ASCII，非 ASCII 注释会导致 ANSI/GBK 解码错误
-- **Electron 可选**：toast 点击跳转依赖 Electron `second-instance` 事件，无 Electron 时仅激活窗口不跳转
+- **PowerShell 无法订阅 WinRT 通知事件**（2026-09 实测）：`Register-ObjectEvent` 直接报 *"Windows PowerShell cannot subscribe to Windows RT events"*；用 `TypedEventHandler` 委托转换虽然能 `add_Activated` 成功，但回调永不执行（WinRT 在无 PowerShell runspace 的线程上触发）。因此 toast.ps1 不做点击回调，点击定位改由「窗口重新聚焦 + `get-latest-decision-session`」实现；`get-pending-jump` 保留为兼容通道（谁写文件谁生效，TTL 5 分钟）
+- **提醒间隔/计划用时的最小值**：`set-config` 会忽略 <=0 的值，过大值夹到 24 小时；`set-session-config` 缺计划用时直接拒绝（弹窗会在本地先拦一次并给出提示）
+- **提醒卡滞留时长**：`set-config` 接受 0（= 常驻）与 1–600 秒，负数/非数忽略；「需要你决策」红卡恒为 `autoMs=0`，不受该配置影响。上限 600 秒是因为再长实际等同于常驻，直接选「常驻」更清楚
 
 ---
 
 ## 更新日志
+
+### v0.2.8
+
+- **新增** 提醒卡滞留时长可配置：设置 → 提醒 → **内部通知配置** →「提醒卡滞留时长」，预设 2/3/4/5/8/10/15/30 秒、自定义（1–600 秒）或「常驻（不自动消散）」，默认仍是 4 秒（对齐 DSH 内置 Toast 的 HOLD_MS+FADE_MS）。配置存在 `defaults.reminderAutoDismissSeconds`，host 每条普通提醒卡按它下发 `autoMs`，重启后从状态文件恢复
+- **修复** 滞留时长此前是硬编码：host 的 `pushReminder` 写死 `4000`，client 本地提示卡（删除/结束/移除失败、测试通知）写死 `6000/8000` —— 同一个插件里三种时长且都改不了。现在 host 下发的 `autoMs` 优先，client 本地卡回落到同一个配置值（启动时 `get-config` 同步一次，设置页改动即时同步）
+- **不变** 「需要你决策」红卡恒为常驻（`autoMs=0`），不受该配置影响——几秒后消散的红卡对离开电脑的用户等于没提醒
+- **测试** 新增 host 端 12 项（默认值/自定义/负数拒绝/过大夹取/0=常驻/决策卡不受影响/重启恢复）+ 客户端 12 项（10 秒不快消、常驻不消散、本地卡跟随配置、设置页下拉预设与自定义）
+
+### v0.2.7
+
+- **修复** 决策提醒卡重复渲染：一条「需要你决策」提醒同时走 React 提醒栈与 `pushReminder()` 里直写 DOM 的旧路径，界面上会叠出两张红卡（一张 bottom:76px、一张 bottom:16px，后者还盖住左下角 🗂 任务面板按钮），而且点一张的 × 另一张不消失。现在只保留 React 一条渲染路径
+- **修复** 决策处理完不消卡：用户在审批弹窗里做完决策后，host 只推了一条普通的「决策已处理」提醒，没人移除常驻红卡，标题也继续闪 `❓ 需要你决策`。现在 client 收到 `decision-cleared` 会收掉该会话的红卡，host 也会把该会话的 `needDecision` 提醒从队列里摘掉（否则刷新页面重新拉取时红卡会"复活"，`get-latest-decision-session` 也会指向过期会话）
+- **修复** 同一会话两张红卡：客户端本地 `approval/request` 检测（负 id）与 host 轮询提醒（正 id）没有合并。现在 `pushReminder` 对同一会话只留最新一条决策卡
+- **修复** 「内部通知」开关关不住提醒卡：`ReminderGate` 原来用的是「`reminderUI` **或** `intervalReminder`」，定时提醒开着就照样显示卡片；直写 DOM 的决策卡更是完全不看开关。现在提醒卡统一归「内部通知」管，与文档一致
+- **修复** `end-task` 的 `diffMs` 符号反了（写成 `plannedMs - actualMs`，与 `finishTask` 和文档的「正数=超时」相反）
+- **修复** `delete-task-record` 在清理 `history` **之前**落盘，且之后不再落盘 → 磁盘上残留已删除的记录，重启后"复活"
+- **修复** 计划用时留空时会把 `plannedMinutes: null` 存下来并标记 `configured=true`，结果是任务永远不启动（不计时、不提醒、也不再弹设置窗），确认文案还写成"计划用时 null 分钟"。现在 host 拒绝非法计划用时（`ok:false` + 可读错误），client 在弹窗里先本地拦截并给出提示，弹窗不关闭
+- **修复** `set-config` 不校验提醒间隔：0 / 负数会被存下来，随后 `intervalMs <= 0` 让定时提醒静默失效（开关显示开着却再也不提醒）。现在非法值直接忽略、过大值夹到 24 小时；状态文件里遗留的非法值在加载时修正为默认值
+- **修复** 决策外发通知的 20 秒节流把「人在 DSH 里、根本没发出去」的那次也记进节流时间戳 → 用户 20 秒内切出 DSH 会收不到这条决策通知。现在只有真的发出去了才记
+- **修复** 状态文件无限增长：`dismissed` / `configs` / `rootSessions` 按会话累积、从不清理（实测几十个会话后 `dismissed` 已有 70 条）。现在加载时裁剪到 200 条（保留活跃会话），并且只回写已知字段，历史遗留键（已移除的 `externalAlert`、旧版默认值快照）不再被一次次写回磁盘
+- **修复** 「外部通知时机」默认值与文档/设置页不一致：代码里是 `hidden`（只有页面不可见才发），注释、README 三处与设置页都写默认 `unfocused`。按文档与既有落盘配置统一为 `unfocused`
+- **修复** 点击系统通知后的会话定位链路实际是断的：`get-pending-jump` 读的跳转文件已经没有任何写入方（`toast.ps1` 回退为 fire-and-forget 后没人写），客户端也从不调用 host 的 `get-latest-decision-session`。现在客户端在「窗口重新获得焦点」时先消费跳转请求，没有再跳到「正在等你决策」的会话；`toast.ps1` 与 README 里的相关说明同步改写（并记录 PowerShell 订阅不到 WinRT 事件这一实测结论）
+- **改进** 提醒卡上限溢出时连淡出定时器一起清理；弹窗遮罩提示与「开始」校验共用同一套 hint 逻辑
+- **测试** `npm test` 从 4 个套件扩到 6 个：新增 host 全链路套件（101 项：计时/提醒/记录/工具/决策/边界/瘦身）与客户端 UI 套件（39 项：真实 DOM + mock React 渲染决策卡与设置弹窗）；旧套件补上系统通知打桩——在此之前跑测试会真的在桌面上弹 Windows 通知
 
 ### v0.2.5
 

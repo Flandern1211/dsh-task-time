@@ -1,6 +1,6 @@
 {
   "name": "dsh-task-time",
-  "version": "0.2.6",
+  "version": "0.2.8",
   "description": "任务用时与提醒：强制设置计划用时+提醒间隔，连续计时，定时提醒（提示音+外部通知，提醒卡可点击跳转会话），决策提醒，任务面板（点击跳转会话），本地记录持久化。",
   "type": "module",
   "main": "lib/index.js",
@@ -30,7 +30,6 @@
   },
   "files": [
     "lib",
-    "shared",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -50,7 +49,9 @@
     "verify": "node scripts/verify.mjs",
     "verify:modules": "node scripts/verify-modules.mjs",
     "verify:channels": "node scripts/verify-channels.mjs",
-    "test": "node scripts/verify.mjs && node scripts/verify-modules.mjs && node scripts/verify-channels.mjs && node scripts/test-changes.mjs"
+    "verify:timing": "node scripts/verify-timing.mjs",
+    "verify:dom": "node scripts/verify-dom.mjs",
+    "test": "node scripts/verify.mjs && node scripts/verify-modules.mjs && node scripts/verify-channels.mjs && node scripts/test-changes.mjs && node scripts/verify-timing.mjs && node scripts/verify-dom.mjs"
   },
   "license": "MIT"
 }

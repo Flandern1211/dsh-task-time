@@ -20,6 +20,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const CLIENT_SRC = readFileSync(join(__dirname, '..', 'lib', 'client.js'), 'utf8')
 const HOST_SRC = readFileSync(join(__dirname, '..', 'lib', 'index.js'), 'utf8')
 
+// 系统通知打桩：本套件专门验证通知通道分流，不打桩会真的在你桌面上弹一堆 Windows 通知。
+const toastSpy = []
+globalThis.__toastSpy = (args) => { toastSpy.push(args); return { unref() {}, kill() {}, on() {} } }
+
 let failures = 0
 const results = []
 function check(name, cond, detail) {
@@ -41,6 +45,9 @@ function check(name, cond, detail) {
     .replace("const MODULE_CONFIG_FILE = join(homedir(), '.dsh', 'dsh-task-time-modules.json')", `const MODULE_CONFIG_FILE = ${JSON.stringify(modFile)}`)
     .replace("const f = join(homedir(), '.dsh', 'dsh-task-time-records.json')", `const f = ${JSON.stringify(stateFile)}`)
     .replace(/const legacyCandidates = \[[\s\S]*?\]/, `const legacyCandidates = [${JSON.stringify(legacy)}]`)
+    // 系统通知打桩：本套件专门测通道分流，不打桩会真的弹一堆 Windows 通知
+    .replace("const child = spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore' })", 'const child = globalThis.__toastSpy(args)')
+  if (!hostSrc.includes('__toastSpy')) throw new Error('toast 打桩未命中：spawn 调用行签名已变，本套件可能会真的弹系统通知')
 
   writeFileSync(stateFile, JSON.stringify({ records: [], defaults: {}, configs: {}, dismissed: [], tasks: {}, history: {} }), 'utf8')
 
@@ -83,7 +90,7 @@ function check(name, cond, detail) {
   const h = await loadHost('host1.mjs')
 
   const cfg0 = await h.rpc('get-config', {})
-  check('host：默认「外部通知时机」= 页面不可见时', cfg0.externalWhen === 'hidden', JSON.stringify(cfg0))
+  check('host：默认「外部通知时机」= DSH 不在前台时', cfg0.externalWhen === 'unfocused', JSON.stringify(cfg0))
 
   // 没有任何上报（页面还没开 / 渲染进程没起来）→ 视为不在 DSH → 该发外部通知
   const st0 = await h.rpc('get-external-status', {})
@@ -94,11 +101,11 @@ function check(name, cond, detail) {
   const st1 = await h.rpc('get-external-status', {})
   check('host：页面可见且前台 → inFront=true（不发系统通知）', st1.inFront === true, JSON.stringify(st1))
 
-  // 切到别的窗口（页面还看得见）→ hidden 模式下仍算在 DSH
+  // 切到别的窗口（页面还看得见）→ 默认 unfocused 模式下算「人离开了 DSH」
   const p2 = await h.rpc('ui-presence', { focused: false, visible: true })
-  check('host：ui-presence 直接返回 inFront 供 client 对齐', p2.inFront === true, JSON.stringify(p2))
+  check('host：ui-presence 直接返回 inFront 供 client 对齐', p2.inFront === false, JSON.stringify(p2))
   const st2 = await h.rpc('get-external-status', {})
-  check('host：hidden 模式下失焦但页面可见 → 仍在 DSH', st2.inFront === true, JSON.stringify(st2))
+  check('host：unfocused 模式下失焦（页面还看得见）→ 不在 DSH（发系统通知）', st2.inFront === false, JSON.stringify(st2))
 
   // 切到「只有页面不可见才算离开」
   const cfgHidden = await h.rpc('set-config', { config: { externalWhen: 'hidden' } })

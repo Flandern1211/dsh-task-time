@@ -12,9 +12,19 @@ param(
 # decodes BOM-less UTF-8 as ANSI/GBK, and stray CJK bytes corrupt block parsing.
 # Fails silently (exit 0); never blocks the caller.
 #
-# Fire-and-forget: shows the toast immediately and exits. The click-to-focus
-# path is handled by DSH Desktop's second-instance (Electron) and the client's
-# document.hasFocus() polling + auto-jump.
+# Fire-and-forget: shows the toast and exits. -Launch carries "dshjump:<sessionId>" so
+# clicking the banner activates DSH Desktop (its Electron second-instance handler brings
+# the window forward); the web client then notices it regained focus and jumps to the
+# session that is waiting for a decision.
+#
+# Why there is no click callback here (verified on Windows PowerShell 5.1, 2026-09):
+#   Register-ObjectEvent  -> "Windows PowerShell cannot subscribe to Windows RT events."
+#   TypedEventHandler::new(...) -> no matching overload
+#   scriptblock cast + add_Activated -> subscribes fine, but the handler never runs
+#     (WinRT raises the event on a thread with no PowerShell runspace), and a
+#     History.Remove()-induced dismissal produced zero callback hits.
+# So this script must not try to listen for the Activated event; the jump is driven
+# by the client's document.hasFocus() polling + get-latest-decision-session RPC.
 #
 # AppId (AUMID) matters: Windows 11 silently drops toasts under an AUMID with
 # no installed app/shortcut. Default borrows DSH Desktop's "ai.deepseek.dsh.desktop".

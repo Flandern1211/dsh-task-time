@@ -509,6 +509,9 @@ function collectTogglesDeep(tree) {
   const modFile = join(work, 'modules.json')
 
   let hostSrc = readFileSync(join(__dirname, '..', 'lib', 'index.js'), 'utf8')
+  // 系统通知打桩：否则本套件会真的在桌面上弹 Windows 通知
+  const toastSpy = []
+  globalThis.__toastSpy = (args) => { toastSpy.push(args); return { unref() {}, kill() {}, on() {} } }
   hostSrc = hostSrc
     .replace(
       "const RECORDS_FILE = join(homedir(), '.dsh', 'dsh-task-time-records.json')",
@@ -523,6 +526,11 @@ function collectTogglesDeep(tree) {
       `const f = ${JSON.stringify(stateFile)}`
     )
     .replace(/const legacyCandidates = \[[\s\S]*?\]/, 'const legacyCandidates = []')
+    .replace(
+      "const child = spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore' })",
+      'const child = globalThis.__toastSpy(args)'
+    )
+  if (!hostSrc.includes('__toastSpy')) throw new Error('toast 打桩未命中：spawn 调用行签名已变，本套件可能会真的弹系统通知')
 
   const hostFile = join(work, 'index.mjs')
   wf(hostFile, hostSrc, 'utf8')

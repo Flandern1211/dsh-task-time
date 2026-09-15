@@ -20,6 +20,12 @@ const LEGACY = join(work, 'legacy.json')
 const MODULES = join(work, 'modules.json')
 
 const src = readFileSync(join(__dirname, '..', 'lib', 'index.js'), 'utf8')
+// 系统通知打桩：不套这一层的话，跑验证脚本会真的在你桌面上弹 Windows 通知（带循环闹铃音）。
+const toastSpy = []
+globalThis.__toastSpy = (args) => {
+  toastSpy.push(args)
+  return { unref() {}, kill() {}, on() {} }
+}
 let mod = src
   .replace(
     "const RECORDS_FILE = join(homedir(), '.dsh', 'dsh-task-time-records.json')",
@@ -37,6 +43,11 @@ let mod = src
     "const f = join(homedir(), '.dsh', 'dsh-task-time-records.json')",
     `const f = ${JSON.stringify(STATE)}`
   )
+  .replace(
+    "const child = spawn('powershell.exe', args, { windowsHide: true, stdio: 'ignore' })",
+    "const child = globalThis.__toastSpy(args)"
+  )
+if (!mod.includes('__toastSpy')) throw new Error('toast 打桩未命中：spawn 调用行签名已变，验证脚本可能会真的弹系统通知')
 
 const copyFile = join(work, 'index.mjs')
 writeFileSync(copyFile, mod, 'utf8')
@@ -157,7 +168,7 @@ const copyFile2 = join(work, 'index2.mjs')
 writeFileSync(copyFile2, mod, 'utf8')
 writeFileSync(STATE, JSON.stringify({
   records: [],
-  defaults: { reminderIntervalMinutes: 25, plannedMinutes: 40, externalAlert: false },
+  defaults: { reminderIntervalMinutes: 25, plannedMinutes: 40, externalAlert: false, reminderAutoDismissSeconds: 12 },
   configs: {
     'cfg-s1': { taskName: '已配置任务', plannedMinutes: 30, reminderIntervalMinutes: 12, externalAlert: false, configured: true },
     'old-no-configured': { taskName: '旧格式配置', plannedMinutes: 45 },
@@ -186,6 +197,7 @@ check('状态恢复：active 任务运行中', board2.active.some((a) => a.sessi
 check('状态恢复：defaults 恢复 25 分钟', ((await callRpc('get-config', {}))).reminderIntervalMinutes === 25, 'defaults not 25')
 const cfgRestored = await callRpc('get-config', {})
 check('状态恢复：默认计划用时恢复 40 分钟', cfgRestored.plannedMinutes === 40, JSON.stringify(cfgRestored))
+check('状态恢复：提醒卡滞留时长恢复 12 秒', cfgRestored.reminderAutoDismissSeconds === 12, JSON.stringify(cfgRestored))
 check(
   '外部通知：legacy externalAlert 不再出现在全局配置里（只由模块开关控制）',
   !('externalAlert' in cfgRestored),
