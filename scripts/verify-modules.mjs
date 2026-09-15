@@ -24,30 +24,60 @@ function check(name, cond, detail) {
 }
 
 // ---------- 最小 React mock（支持异步 effects + setState 重渲染） ----------
+// 展开元素树时用它渲染函数组件子节点（由 makeReact 赋值）
+let renderFunctionType = null
 function makeReact() {
   function createElement(type, props) {
     const children = Array.prototype.slice.call(arguments, 2)
     return { __el: true, type, props: Object.assign({}, props || {}), children: children.flat(Infinity).filter((c) => c != null && c !== false) }
   }
-  const hookState = { current: null, index: 0 }
+  const hookState = { current: null, index: 0, prevCount: null, enforce: false }
   let renderDirty = false
 
   function useHookSlot(init) {
     const hooks = hookState.current
+    // hook 在组件渲染之外被调用 → 真实 React 抛 #321（Invalid hook call）
+    if (!hooks) throw new Error('mock React #321: hook 在组件函数之外被调用（Invalid hook call）')
     const i = hookState.index++
+    // 同一次渲染里 hook 数量多于上一次 → 真实 React 抛 #310，
+    // DSH 的 slot 错误边界会随即把该 entry 摘掉（abdicate，UI 永久消失）。
+    if (hookState.enforce && hookState.prevCount !== null && i >= hookState.prevCount) {
+      throw new Error('mock React #310: 本次渲染的 hook 数多于上次（' + hookState.prevCount + ' → ' + (i + 1) + '）：条件调用 hook，或把子组件当普通函数调用')
+    }
     if (hooks.length <= i) hooks[i] = typeof init === 'function' ? init() : init
     return hooks[i]
+  }
+
+  // 展开元素树时渲染「函数组件」子节点：用一次性的新 hook 上下文，避免污染实例状态
+  renderFunctionType = function (type, props) {
+    const saved = { c: hookState.current, i: hookState.index, p: hookState.prevCount, e: hookState.enforce }
+    hookState.current = []
+    hookState.index = 0
+    hookState.prevCount = null
+    hookState.enforce = false
+    try {
+      return type(props)
+    } finally {
+      hookState.current = saved.c
+      hookState.index = saved.i
+      hookState.prevCount = saved.p
+      hookState.enforce = saved.e
+    }
   }
 
   // 异步渲染：跑组件 → 执行 effects → 等宏任务让 RPC 链落地 → 若 setState 则重渲染
   async function renderAsync(Component, props) {
     const hooks = []
     let out = null
+    let prevCount = null
     for (let pass = 0; pass < 25; pass++) {
       hookState.current = hooks
       hookState.index = 0
+      hookState.prevCount = prevCount
+      hookState.enforce = true
       renderDirty = false
       out = Component(props || {})
+      prevCount = hookState.index
       for (const h of hooks) {
         if (h && h.__effectFn && !h.__ran) {
           h.__ran = true
@@ -68,11 +98,15 @@ function makeReact() {
   // 因此 useSyncExternalStore 注册的订阅回调能真正驱动重渲染（这才是"实时生效"的关键）。
   function createInstance(Component, props) {
     const hooks = []
+    let prevCount = null
     function renderOnce() {
       hookState.current = hooks
       hookState.index = 0
+      hookState.prevCount = prevCount
+      hookState.enforce = true
       renderDirty = false
       const out = Component(props || {})
+      prevCount = hookState.index
       for (const h of hooks) {
         if (h && h.__effectFn && !h.__ran) {
           h.__ran = true
@@ -298,10 +332,14 @@ function expandTree(node, depth) {
   if (!node.__el) return node
   const kids = (node.children || []).map((n) => expandTree(n, d + 1)).filter((x) => x != null && x !== false)
   if (typeof node.type === 'function') {
-    // 展开无 hooks 的展示型函数组件
+    // 展开函数组件（含带 hooks 的组件）：用一次性 hook 上下文渲染
     const props = Object.assign({}, node.props, { children: kids })
     let rendered
-    try { rendered = node.type(props) } catch (e) { return { __el: true, type: 'unexpanded', props: node.props, children: kids } }
+    try {
+      rendered = renderFunctionType ? renderFunctionType(node.type, props) : node.type(props)
+    } catch (e) {
+      return { __el: true, type: 'unexpanded', props: node.props, children: kids, renderError: String(e && e.message || e) }
+    }
     return expandTree(rendered, d + 1)
   }
   return { __el: true, type: node.type, props: node.props, children: kids }
@@ -397,7 +435,8 @@ function collectTogglesDeep(tree) {
   check('任务完成：存在 2s 主轮询', !!poll, 'poll missing')
   if (poll) { poll.fn(); await env.tick(); await env.tick() }
 
-  const out = await env.renderEntry('task-time-reminder')
+  // entry 返回的是子组件元素（独立 fiber），展开后才能看到真实卡片 DOM
+  const out = expandTree(await env.renderEntry('task-time-reminder'))
   const txt = JSON.stringify(out)
   check('任务完成：渲染出提醒卡', out !== null, 'card not rendered')
   check('任务完成：卡片文本含任务结束', /任务结束/.test(txt), txt.slice(0, 300))
@@ -416,7 +455,7 @@ function collectTogglesDeep(tree) {
   await env.tick()
   const poll = env.intervals.find((i) => i.ms === 2000)
   if (poll) { poll.fn(); await env.tick(); await env.tick() }
-  const txt = JSON.stringify(await env.renderEntry('task-time-reminder'))
+  const txt = JSON.stringify(expandTree(await env.renderEntry('task-time-reminder')))
   check('决策提醒：渲染红色常驻卡', /tt-need-decision/.test(txt), txt.slice(0, 300))
   check('决策提醒：文案含「需要你决策」', /需要你决策/.test(txt), txt.slice(0, 300))
 }
@@ -430,7 +469,8 @@ function collectTogglesDeep(tree) {
   env.mod.apply(env.ctx)
   await env.tick()
   await env.tick()
-  check('提醒全关：提醒卡不渲染', (await env.renderEntry('task-time-reminder')) === null, 'should be null')
+  // 提醒模块全关：gate 仍会开（定时提醒子模块属于任务用时），但展开后没有卡片
+  check('提醒全关：提醒卡不渲染', expandTree(await env.renderEntry('task-time-reminder')) === null, 'should be null')
   check('提醒全关：任务面板仍渲染（任务用时未关）', (await env.renderEntry('task-time-board')) !== null, 'board should render')
   check('提醒全关：Dock 状态条仍渲染', (await env.renderEntry('task-time-status', { sessionId: 'sess-1' })) !== null, 'dock should render')
 }
@@ -671,6 +711,62 @@ function collectTogglesDeep(tree) {
 
   const saveCalls = env.rpcCalls.filter((c) => c.method === 'set-module-config')
   check('实时开关：开关变更已发往 host（set-module-config）', saveCalls.length >= 2, 'set-module-config 调用数=' + saveCalls.length)
+}
+
+// ================= 场景 11.5：开关打开瞬间 entry 的 hook 数量必须稳定 =================
+// 回归测试（真实事故）：entry 包装器曾经用 `componentFn(props)` 直接调用子组件，
+// 把子组件的 hooks 接到 entry 自己的 fiber 上。开关从关到开时 hook 数量变化，
+// React 抛 #310（Rendered more hooks than during the previous render），
+// DSH 的 slot 错误边界随即把该 entry 永久摘掉（abdicate）——
+// 现象就是「模块开关全开，但计时条 / 任务面板 / 设置弹窗永远不出现」。
+{
+  const off = {
+    timing: { enabled: false, children: { timer: false, planning: false, intervalReminder: false, taskBoard: false, dockStatus: false, orphanCleanup: false } },
+    alert: { enabled: false, children: { decisionDetection: false, externalNotify: false, titleFlash: false, reminderUI: false, toastJump: false } },
+  }
+  const env = createEnv({
+    moduleConfig: off,
+    reminders: [{ id: 1, kind: 'finish', sessionId: 'sess-1', taskName: '测试任务', text: '✅ 任务结束', ts: Date.now(), needDecision: false, autoMs: 4000 }],
+  })
+  env.mod.apply(env.ctx)
+  await env.tick()
+  await env.tick()
+
+  // 先挂载（此时开关全关，entry 渲染 null）
+  const boardInst = env.mountEntry('task-time-board', {})
+  const dockInst = env.mountEntry('task-time-status', { sessionId: 'sess-1' })
+  const reminderInst = env.mountEntry('task-time-reminder', {})
+  const setupInst = env.mountEntry('task-time-setup', {})
+
+  // 用设置页真实路径把开关全部打开
+  async function clickToggle(keyword, checked) {
+    const t = collectTogglesDeep(await env.renderEntry('task-time')).find((x) => x.text.indexOf(keyword) !== -1)
+    if (!t) return false
+    t.input.props.onChange({ target: { checked } })
+    await env.tick()
+    await env.tick()
+    return true
+  }
+  const opened = []
+  opened.push(await clickToggle('启用任务用时', true))
+  opened.push(await clickToggle('启用提醒', true))
+  for (const kw of ['任务面板', 'Dock 状态条', '计划配置', '内部通知']) {
+    opened.push(await clickToggle(kw, true))
+  }
+  check('hook 稳定性：设置页开关可全部打开', opened.every(Boolean), JSON.stringify(opened))
+
+  const mounted = [['任务面板', boardInst], ['Dock 状态条', dockInst], ['提醒卡', reminderInst], ['设置弹窗', setupInst]]
+  for (const [name, inst] of mounted) {
+    let out = null
+    let err = null
+    try { out = inst.rerender() } catch (e) { err = e }
+    check(`hook 稳定性：开关打开后「${name}」entry 重渲染不抛错`, !err, err && err.message)
+    check(`hook 稳定性：「${name}」entry 渲染出内容（未被错误边界摘掉）`, out !== null && out !== undefined, JSON.stringify(out))
+  }
+
+  // 结构断言：子组件必须以「元素」形式返回，即独立 fiber（而不是被当普通函数调用）
+  const boardTree = boardInst.rerender()
+  check('hook 稳定性：子组件以元素形式渲染（独立 fiber，hook 不串到 entry 上）', !!(boardTree && boardTree.__el && typeof boardTree.type === 'function'), JSON.stringify(boardTree).slice(0, 120))
 }
 
 // ================= 场景 11：决策卡会话感知 — 在决策会话里自动隐藏，在其他会话里出现 =================
